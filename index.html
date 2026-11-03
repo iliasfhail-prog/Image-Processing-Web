@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sobel Edge Lab</title>
+  <style>
+    :root { font-family: system-ui, sans-serif; color: #172335; background: #f5f7fb; }
+    body { max-width: 1100px; margin: 0 auto; padding: 24px; }
+    h1 { margin-bottom: 6px; }
+    p { line-height: 1.5; }
+    .panel { background: white; border-radius: 14px; padding: 20px; box-shadow: 0 3px 18px #192d4b12; }
+    input { max-width: 100%; }
+    #status { min-height: 1.5em; color: #435268; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 20px; }
+    [hidden] { display: none !important; }
+    figure { margin: 0; background: white; border-radius: 14px; padding: 14px; box-shadow: 0 3px 18px #192d4b12; }
+    figcaption { font-weight: 650; margin-bottom: 10px; }
+    canvas { display: block; width: 100%; height: auto; background: #e9edf2; border-radius: 8px; }
+    button { margin-top: 12px; padding: 9px 14px; border: 0; border-radius: 8px; color: white; background: #145fbd; cursor: pointer; }
+    button:focus-visible, input:focus-visible { outline: 3px solid #145fbd; outline-offset: 3px; }
+    @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } body { padding: 12px; } }
+  </style>
+</head>
+<body>
+  <h1>Sobel Edge Lab</h1>
+  <p>Choose a JPEG or PNG to compare the original, grayscale, horizontal edges, vertical edges and combined edges. Processing happens in your browser; your image is not uploaded to a server.</p>
+  <div class="panel">
+    <label for="photo">Choose an image</label><br><br>
+    <input id="photo" type="file" accept="image/jpeg,image/png">
+    <p id="status" role="status" aria-live="polite">No image selected.</p>
+  </div>
+  <div id="results" class="grid" hidden>
+    <figure><figcaption>Original</figcaption><canvas id="original"></canvas><button type="button" data-image="original">Download original PNG</button></figure>
+    <figure><figcaption>Grayscale</figcaption><canvas id="grayscale"></canvas><button type="button" data-image="grayscale">Download grayscale</button></figure>
+    <figure><figcaption>Horizontal edges</figcaption><canvas id="horizontal"></canvas><button type="button" data-image="horizontal">Download horizontal edges</button></figure>
+    <figure><figcaption>Vertical edges</figcaption><canvas id="vertical"></canvas><button type="button" data-image="vertical">Download vertical edges</button></figure>
+    <figure><figcaption>Combined edges</figcaption><canvas id="combined"></canvas><button type="button" data-image="combined">Download combined edges</button></figure>
+  </div>
+  <p>Horizontal edges measure brightness changes from top to bottom; vertical edges measure changes from left to right. The combined view uses both: √(Gx² + Gy²). Each edge view is independently scaled for display.</p>
+  <script>
+    const fileInput = document.getElementById('photo');
+    const status = document.getElementById('status');
+    const results = document.getElementById('results');
+    const names = ['original', 'grayscale', 'horizontal', 'vertical', 'combined'];
+    const canvases = Object.fromEntries(names.map(name => [name, document.getElementById(name)]));
+    const MAX_SIDE = 1400;
+    let processingId = 0;
+
+    function paintGray(canvas, pixels, width, height, max = 255) {
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      const image = ctx.createImageData(width, height);
+      const scale = max > 0 ? 255 / max : 0;
+      for (let i = 0, j = 0; i < pixels.length; i++, j += 4) {
+        const v = Math.min(255, Math.round(pixels[i] * scale));
+        image.data[j] = v;
+        image.data[j + 1] = v;
+        image.data[j + 2] = v;
+        image.data[j + 3] = 255;
+      }
+      ctx.putImageData(image, 0, 0);
+    }
+
+    function sobel(gray, width, height) {
+      const count = width * height;
+      const horizontal = new Float32Array(count);
+      const vertical = new Float32Array(count);
+      const combined = new Float32Array(count);
+      let maxH = 0, maxV = 0, maxC = 0;
+      const at = (x, y) => gray[Math.min(height - 1, Math.max(0, y)) * width + Math.min(width - 1, Math.max(0, x))];
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const a = at(x - 1, y - 1), b = at(x, y - 1), c = at(x + 1, y - 1);
+          const d = at(x - 1, y),                         f = at(x + 1, y);
+          const g = at(x - 1, y + 1), h = at(x, y + 1), i = at(x + 1, y + 1);
+          const gx = -a + c - 2 * d + 2 * f - g + i;
+          const gy = -a - 2 * b - c + g + 2 * h + i;
+          const n = y * width + x;
+          horizontal[n] = Math.abs(gy);
+          vertical[n] = Math.abs(gx);
+          combined[n] = Math.hypot(gx, gy);
+          if (horizontal[n] > maxH) maxH = horizontal[n];
+          if (vertical[n] > maxV) maxV = vertical[n];
+          if (combined[n] > maxC) maxC = combined[n];
+        }
+      }
+      return { horizontal, vertical, combined, maxH, maxV, maxC };
+    }
+
+    fileInput.addEventListener('change', async () => {
+      const file = fileInput.files[0];
+      const currentId = ++processingId;
+      results.hidden = true;
+      if (!file) { status.textContent = 'No image selected.'; return; }
+      if (!['image/jpeg', 'image/png'].includes(file.type)) { status.textContent = 'Choose a JPEG or PNG image.'; return; }
+      status.textContent = 'Processing image…';
+      await new Promise(resolve => setTimeout(resolve, 0));
+      let bitmap;
+      try {
+        bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+        if (currentId !== processingId) return;
+        const ratio = Math.min(1, MAX_SIDE / Math.max(bitmap.width, bitmap.height));
+        const width = Math.max(1, Math.round(bitmap.width * ratio));
+        const height = Math.max(1, Math.round(bitmap.height * ratio));
+        const original = canvases.original;
+        original.width = width;
+        original.height = height;
+        const ctx = original.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(bitmap, 0, 0, width, height);
+        bitmap.close();
+        bitmap = null;
+        const source = ctx.getImageData(0, 0, width, height).data;
+        const gray = new Uint8Array(width * height);
+        for (let p = 0, j = 0; p < gray.length; p++, j += 4) {
+          gray[p] = Math.round(0.299 * source[j] + 0.587 * source[j + 1] + 0.114 * source[j + 2]);
+        }
+        paintGray(canvases.grayscale, gray, width, height);
+        const edges = sobel(gray, width, height);
+        paintGray(canvases.horizontal, edges.horizontal, width, height, edges.maxH);
+        paintGray(canvases.vertical, edges.vertical, width, height, edges.maxV);
+        paintGray(canvases.combined, edges.combined, width, height, edges.maxC);
+        if (currentId !== processingId) return;
+        results.hidden = false;
+        status.textContent = `Done: ${width} × ${height} pixels${ratio < 1 ? ' (resized for speed)' : ''}.`;
+      } catch (error) {
+        if (currentId === processingId) status.textContent = `Could not read this image: ${error.message}`;
+      } finally {
+        if (bitmap) bitmap.close();
+      }
+    });
+
+    document.querySelectorAll('button[data-image]').forEach(button => {
+      button.addEventListener('click', () => {
+        const name = button.dataset.image;
+        canvases[name].toBlob(blob => {
+          if (!blob) return;
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = `${name}_edges.png`.replace('original_edges', 'original').replace('grayscale_edges', 'grayscale');
+          document.body.append(link);
+          link.click();
+          link.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 60000);
+        }, 'image/png');
+      });
+    });
+  </script>
+</body>
+</html>
